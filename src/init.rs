@@ -1,5 +1,7 @@
+use okc::version::MinecraftVersion;
 use crate::cli::{InitArgs, Verbosity};
 
-fn initialize(verbosity: Verbosity, args: InitArgs) {
+pub(super) fn initialize(verbosity: Verbosity, args: InitArgs) {
+    let dir = args.dir();
 
 }

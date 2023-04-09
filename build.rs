@@ -3,15 +3,18 @@
 use chrono::{DateTime, Utc};
 use proc_macro2::TokenStream;
 use quote::quote;
-use serde::Deserialize;
+use reqwest::blocking::Client;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::str::FromStr;
 
 fn main() {
     let versions = std::env::var("CARGO_MANIFEST_DIR").unwrap() + "/target/versions.json";
     println!("cargo:rerun-if-changed={versions}");
-    write_versions_file(cache())
+    let client = Client::new();
+    write_versions_file(cache(&client))
 }
 
 fn write_versions_file(versions: MinecraftVersions) {
@@ -23,43 +26,26 @@ fn write_versions_file(versions: MinecraftVersions) {
     };
 
     let constant = {
-        let types = quote! {
-            #[derive(Clone, Copy)]
-            pub(super) enum ConstMCVersion {
-                Release(ConstMCVersionData),
-                Snapshot(ConstMCVersionData)
-            }
-
-            #[derive(Clone, Copy)]
-            pub(super) struct ConstMCVersionData {
-                pub id: &'static str,
-                pub url: &'static str,
-                pub time: &'static str,
-                pub release_time: &'static str,
-                pub sha1: &'static str,
-                pub compliance_level: u8
-            }
-        };
-
         fn make_def_from_data(
-            _MinecraftVersion {
-                ref id,
+            MinecraftVersionData {
+                id,
                 sha1,
                 url,
                 release_time,
                 time,
                 compliance_level,
-            }: _MinecraftVersion,
+                server_url,
+            }: &MinecraftVersionData,
             ver_type: TokenStream,
         ) -> TokenStream {
             let release_time = release_time.to_string();
             let time = time.to_string();
-            quote!(#id => ConstMCVersion::#ver_type (ConstMCVersionData { id: #id, url: #url, sha1: #sha1, release_time: #release_time, time: #time, compliance_level: #compliance_level }))
+            quote!(#id => ConstMCVersion::#ver_type (ConstMCVersionData { id: #id, url: #url, sha1: #sha1, release_time: #release_time, time: #time, compliance_level: #compliance_level, server_url: #server_url }))
         }
 
         let definitions = versions
             .versions
-            .into_iter()
+            .iter()
             .filter_map(|a| match a {
                 MinecraftVersion::Release(data) => Some(make_def_from_data(data, quote!(Release))),
                 MinecraftVersion::Snapshot(data) => {
@@ -81,97 +67,150 @@ fn write_versions_file(versions: MinecraftVersions) {
             extern crate phf as __phf;
             extern crate chrono as __chrono;
 
-            #types
-
-            static VERSIONS: __phf::Map<&'static str, ConstMCVersion> = __phf::phf_map! {
+            pub(super) static VERSIONS: __phf::Map<&'static str, ConstMCVersion> = __phf::phf_map! {
                 #(#definitions,)*
             };
-
-            pub(super) fn obtain(str: &str) -> Option<super::MinecraftVersion> {
-                VERSIONS.get(str).map(|a| *a).map(map_version)
-            }
-
-            pub(super) fn map_version(c: ConstMCVersion) -> super::MinecraftVersion {
-                match c {
-                    ConstMCVersion::Release(data) => super::MinecraftVersion::Release(map_version_data(data)),
-                    ConstMCVersion::Snapshot(data) => super::MinecraftVersion::Snapshot(map_version_data(data))
-                }
-            }
-
-            fn map_version_data(ConstMCVersionData { id, url, time, release_time, sha1, compliance_level }: ConstMCVersionData) -> super::MinecraftVersionData {
-                super::MinecraftVersionData {
-                    id,
-                    url,
-                    sha1,
-                    compliance_level,
-                    time: time.parse().unwrap(),
-                    release_time: release_time.parse().unwrap()
-                }
-            }
 
             #latest
         }
     };
 
+    let version_macro = {
+        let definitions = versions.versions.iter().map(|a| match a {
+            MinecraftVersion::Release(data)
+            | MinecraftVersion::Snapshot(data) => data
+        }).map(|MinecraftVersionData { id, .. }| quote!((#id) => { crate::version::MinecraftVersion::from_str(#id).unwrap() },)).collect::<Vec<_>>();
+        quote! {
+            macro version {
+                #(#definitions)*
+                () => { compile_error!("empty version") }
+            }
+        }
+    };
+
     let tokens = quote! {
         #header
-
-        mod constant {
-            #constant
-        }
+        #constant
+        #version_macro
     };
     versions_rs
         .write_all(tokens.to_string().as_bytes())
         .unwrap();
 }
 
-fn cache() -> MinecraftVersions {
+fn cache(client: &Client) -> MinecraftVersions {
     let versions = std::env::var("CARGO_MANIFEST_DIR").unwrap() + "/target/versions.json";
     File::open(&versions)
         .map(|mut file| {
             let mut s = String::new();
             file.read_to_string(&mut s).unwrap();
-            println!("{}", &s);
+            println!("file = {}", &s);
             serde_json::from_str(&s).unwrap()
         })
-        .unwrap_or_else(|_| download(versions))
+        .unwrap_or_else(|_| download(versions, client))
 }
 
-fn download(versions_file: String) -> MinecraftVersions {
+fn download(versions_file: String, client: &Client) -> MinecraftVersions {
     let mut file = File::options()
         .write(true)
         .create_new(true)
         .open(versions_file)
         .unwrap();
-    let resp =
-        reqwest::blocking::get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
-            .unwrap()
-            .text()
-            .unwrap();
-    file.write_all(resp.as_bytes()).unwrap();
-    serde_json::from_str(&resp)
-        .inspect(|a| println!("{a:#?}"))
+    println!("resp blocked");
+    let resp = client
+        .get("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json")
+        .send()
         .unwrap()
+        .text()
+        .unwrap();
+    println!("resp unblocked; parsing");
+    let st: _MinecraftVersions = serde_json::from_str(&resp).unwrap();
+    println!("`st` parsed");
+
+    let get_data = |_MCVersionData {
+                        id,
+                        url,
+                        time,
+                        release_time,
+                        sha1,
+                        compliance_level,
+                    }: _MCVersionData|
+     -> MinecraftVersionData {
+        println!("fetching server url for {}", &id);
+        let server_url = client
+            .get(&url)
+            .send()
+            .unwrap()
+            .json::<VersionData>()
+            .unwrap()
+            .downloads
+            .server
+            .url;
+        println!("fetched server url for {}", &id);
+        MinecraftVersionData {
+            id,
+            url,
+            time,
+            release_time,
+            sha1,
+            compliance_level,
+            server_url,
+        }
+    };
+
+    let smallest_release_time = DateTime::<Utc>::from_str("2012-03-29T22:00:00+00:00").unwrap();
+
+    let real = MinecraftVersions {
+        latest: st.latest,
+        versions: st
+            .versions
+            .into_iter()
+            .filter_map(|a| match a {
+                _MCVersion::Release(release) if release.release_time >= smallest_release_time => Some(MinecraftVersion::Release(get_data(release))),
+                _MCVersion::Snapshot(snapshot) => {
+                    Some(MinecraftVersion::Snapshot(get_data(snapshot)))
+                }
+                _ => None,
+            })
+            .collect(),
+    };
+    let real_resp = serde_json::to_string(&real).unwrap();
+    println!("real_resp = {}", &real_resp);
+    file.write_all(real_resp.as_bytes()).unwrap();
+    real
 }
 
 #[derive(Deserialize, Debug)]
+struct _MinecraftVersions {
+    latest: Latest,
+    versions: Vec<_MCVersion>,
+}
+
+#[derive(Deserialize, Serialize)]
 struct MinecraftVersions {
     latest: Latest,
     versions: Vec<MinecraftVersion>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum MinecraftVersion {
+    Release(MinecraftVersionData),
+    Snapshot(MinecraftVersionData),
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum MinecraftVersion {
-    Snapshot(_MinecraftVersion),
-    Release(_MinecraftVersion),
-    OldBeta(_MinecraftVersion),
-    OldAlpha(_MinecraftVersion),
+enum _MCVersion {
+    Snapshot(_MCVersionData),
+    Release(_MCVersionData),
+    OldBeta(_MCVersionData),
+    OldAlpha(_MCVersionData),
 }
 
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
-struct _MinecraftVersion {
+struct _MCVersionData {
     id: String,
     url: String,
     time: DateTime<Utc>,
@@ -180,8 +219,34 @@ struct _MinecraftVersion {
     compliance_level: u8,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize)]
+struct MinecraftVersionData {
+    id: String,
+    url: String,
+    time: DateTime<Utc>,
+    release_time: DateTime<Utc>,
+    sha1: String,
+    compliance_level: u8,
+    server_url: String,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
 struct Latest {
     release: String,
     snapshot: String,
+}
+
+#[derive(Deserialize)]
+struct VersionData {
+    downloads: VersionDownloads,
+}
+
+#[derive(Deserialize)]
+struct VersionDownloads {
+    server: VDS,
+}
+
+#[derive(Deserialize)]
+struct VDS {
+    url: String,
 }

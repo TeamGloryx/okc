@@ -1,11 +1,16 @@
 use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, Args, ArgAction};
-use okc::flavor::MinecraftVersion;
+use okc::version::MinecraftVersion;
 
 #[derive(Parser)]
+#[command(author = "gh:TeamGloryx")]
+#[command(version = okc::VERSION)]
+#[command(about = "OKCraft - A tool for quick creation and management of Minecraft servers from the command line.")]
 pub struct Cli {
     #[arg(short, long, action = ArgAction::Count)]
     verbose: u8,
+    #[command(subcommand)]
+    pub real: CliSubcommand
 }
 
 impl Cli {
@@ -33,7 +38,7 @@ pub enum CliSubcommand {
 #[derive(Args)]
 pub struct InitArgs {
     dir: PathBuf,
-    version: MinecraftVersion
+    pub version: MinecraftVersion
 }
 
 impl InitArgs {

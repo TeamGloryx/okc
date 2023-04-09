@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, Args, ArgAction};
+use okc::flavor::MinecraftVersion;
 
 #[derive(Parser)]
 pub struct Cli {
@@ -32,7 +33,7 @@ pub enum CliSubcommand {
 #[derive(Args)]
 pub struct InitArgs {
     dir: PathBuf,
-    version: Version
+    version: MinecraftVersion
 }
 
 impl InitArgs {

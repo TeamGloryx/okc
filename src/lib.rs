@@ -1,1 +1,1 @@
-mod flavor;
+pub mod flavor;

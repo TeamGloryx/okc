@@ -1,49 +1,30 @@
+use chrono::{DateTime, Utc};
 use std::str::FromStr;
-use clap::ValueEnum;
+use serde::{Deserialize, Serialize};
 
-mod latest {
-    pub const RELEASE: &str = "1.19.4"; //include_str!(concat!(env!("OUT_DIR"), "/latest/release.txt"));
-    pub const SNAPSHOT: &str = "23w14a"; //include_str!(concat!(env!("OUT_DIR"), "/latest/snapshot.txt"));
+#[derive(Serialize, Clone)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum MinecraftVersion {
+    Release(MinecraftVersionData),
+    Snapshot(MinecraftVersionData)
 }
 
-pub enum Version {
-    Release(String),
-    Snapshot(String)
-}
-
-impl Version {
-    fn latest() -> Self {
-        Self::Release(latest::RELEASE.to_owned())
-    }
-
-    fn latest_snapshot() -> Self {
-        Self::Snapshot(latest::SNAPSHOT.to_owned())
-    }
-}
-
-fn require<E>(cond: bool, err: impl Fn() -> E) -> Result<(), E> {
-    if cond {
-        Ok(())
-    } else {
-        Err(err())
-    }
-}
-
-impl FromStr for Version {
-    type Err = String;
+impl FromStr for MinecraftVersion {
+    type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "latest" | "" => Ok(Version::latest()),
-            "snapshot" => Ok(Version::latest_snapshot()),
-            real => {
-                let mut real = real;
-                real = real.strip_prefix("1.").ok_or_else(|| "the version does not start with 1.".to_owned())?;
-                let (a, b) = real.split_once('.').ok_or_else(|| "no dot???".to_owned())?;
-                require(a.parse::<u8>().is_ok(), || "not a number at pos 1.X.y".to_owned())?;
-                require(b.parse::<u8>().is_ok(), || "not a number at pos 1.x.Y".to_owned())?;
-
-                Ok(Self::Release(real.to_owned()))
-            }
-        }
+        constant::obtain(s).ok_or(())
     }
 }
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MinecraftVersionData {
+    pub id: &'static str,
+    pub url: &'static str,
+    pub time: DateTime<Utc>,
+    pub release_time: DateTime<Utc>,
+    pub sha1: &'static str,
+    pub compliance_level: u8,
+}
+
+include!(concat!(env!("OUT_DIR"), "/versions.rs"));
